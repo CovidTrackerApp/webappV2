@@ -4,6 +4,7 @@ const bcrypt = require("bcrypt");
 const passport = require("passport");
 const flash = require("express-flash");
 const session = require("express-session");
+const sendEmail = require("./send_mail");
 require("dotenv").config();
 const app = express();
 
@@ -45,13 +46,13 @@ app.get("/users/register", checkAuthenticated, (req, res) => {
 
 app.get("/users/login", checkAuthenticated, (req, res) => {
   // flash sets a messages variable. passport sets the error message
-  console.log(req.session.flash.error);
+  // console.log(req.session.flash.error);
   res.render("login.ejs");
 });
 
 app.get("/users/dashboard", checkNotAuthenticated, (req, res) => {
   console.log(req.isAuthenticated());
-  res.render("dashboard", { user: req.user.name });
+  res.render("dashboard", { user: req.user.uname });
 });
 
 app.get("/users/logout", (req, res) => {
@@ -60,64 +61,115 @@ app.get("/users/logout", (req, res) => {
 });
 
 app.post("/users/register", async (req, res) => {
-  let { name, email, password, password2 } = req.body;
+  let {uname, password, re_password, email, ph_no } = req.body;
 
   let errors = [];
 
   console.log({
-    name,
-    email,
-    password,
-    password2
+    uname, password, re_password, email, ph_no
   });
 
-  if (!name || !email || !password || !password2) {
-    errors.push({ message: "Please enter all fields" });
+  if (!uname || !password || !re_password || !email || !ph_no) {
+    errors.push({
+      message : "Please Enter all the fields" 
+    });
   }
 
-  if (password.length < 6) {
-    errors.push({ message: "Password must be a least 6 characters long" });
+  if (password.length < 4) {
+    errors.push({ message: "Password must be a least 4 characters long" });
   }
 
-  if (password !== password2) {
-    errors.push({ message: "Passwords do not match" });
+  if (password != re_password) {
+    errors.push({
+      message : "Passwords do not match." 
+    });
   }
-
+  
   if (errors.length > 0) {
-    res.render("register", { errors, name, email, password, password2 });
+    res.render("register", { errors, uname, email, password, re_password, ph_no });
   } else {
-    hashedPassword = await bcrypt.hash(password, 10);
+
+    const saltRounds = 10;
+    const salt = bcrypt.genSaltSync(saltRounds);
+    let hashedPassword = await bcrypt.hash(password, salt);
     console.log(hashedPassword);
+    
     // Validation passed
     pool.query(
-      `SELECT * FROM users
-        WHERE email = $1`,
-      [email],
+      `SELECT * FROM hospital
+        WHERE uname = $1`,
+      [uname],
       (err, results) => {
         if (err) {
           console.log(err);
         }
-        console.log(results.rows);
+        console.log("Hi: ", results.rows);
 
         if (results.rows.length > 0) {
-          return res.render("register", {
-            message: "Email already registered"
+          console.log("length: ", results.rows.length);
+          errors.push({
+            message : "Username already registered" 
           });
+          return res.render("register", { errors });
         } else {
-          pool.query(
-            `INSERT INTO users (name, email, password)
-                VALUES ($1, $2, $3)
-                RETURNING id, password`,
-            [name, email, hashedPassword],
-            (err, results) => {
+
+          // // check duplicacy of email 
+          pool.query(`SELECT * FROM hospital
+            WHERE email = $1`,
+            [email], (err, result2) => {
               if (err) {
-                throw err;
+                console.log(err);
               }
-              console.log(results.rows);
-              req.flash("success_msg", "You are now registered. Please log in");
-              res.redirect("/users/login");
-            }
-          );
+              if (result2.rows.length > 0) {
+                errors.push({
+                  message : "Email already registered" 
+                });
+                return res.render("register", { errors });
+              }
+              else {
+                // check duplicacy of ph_no
+                pool.query(`SELECT * FROM hospital
+                WHERE ph_no = $1`,
+                [ph_no], (err, result3) => {
+                  if (err) {
+                    console.log(err);
+                  }
+                  if (result3.rows.length > 0) {
+                    errors.push({
+                      message : "Phone number already registered" 
+                    });
+                    return res.render("register", { errors });
+                  }
+                  else {
+                    // generate OTP
+                    function randomNum(min, max) {
+                      return Math.floor(Math.random() * (max - min) + min)
+                    }
+
+                    const verificationCode = randomNum(10000, 99999);
+                    var verified = false;
+                    var verified_by = null;
+
+                    sendEmail(verificationCode, email);  
+
+                    pool.query(
+                      `INSERT INTO hospital (uname, password, email, ph_no, otp, verified, verified_by)
+                          VALUES ($1, $2, $3, $4, $5, $6, $7)
+                          RETURNING *`,
+                      [uname, hashedPassword, email, ph_no, verificationCode, verified, verified_by],
+                      (err, results) => {
+                        if (err) {
+                          throw err;
+                        }
+                        console.log("Hello: ", results.rows);
+                        req.flash("success_msg", "You are now registered. Please log in");
+                        res.redirect("/users/login");
+                      }
+                    );
+                  }
+                });
+              }
+            });
         }
       }
     );
@@ -147,6 +199,21 @@ function checkNotAuthenticated(req, res, next) {
   res.redirect("/users/login");
 }
 
+
+// database connection here. //
+async function dbStart() {
+  try { 
+      await pool.connect();
+      console.log("DB connected successfully.");
+      // await client.query("");
+
+  }
+  catch (e) {
+      console.error(`The error has occured: ${e}`)
+  }
+}
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  dbStart();
 });
